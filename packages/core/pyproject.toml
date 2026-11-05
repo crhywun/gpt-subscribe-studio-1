@@ -9,7 +9,7 @@ description = "共享底座：脱敏日志、配置加载、传输工具（gpt-s
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.26.0",
-    "curl_cffi>=0.13.0",
+    "curl_cffi>=0.16.1",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -1,0 +1,47 @@
+name: gss-local
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deploy/local/Dockerfile
+    image: gss-local-api:latest
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      GSS_WEB_DIR: /app/web
+      GSS_LOGIN_FILE: /app/login.html
+      GSS_DATA_DIR: /data
+      GSS_CONFIG_DIR: /config
+      GSS_AUTH_FILE: /config/container-auth.json
+      GSS_PROXY_CONFIG: /data/proxy-gateways.json
+    volumes:
+      - ./runtime/local/data:/data
+      - ./runtime/local/config:/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsSL", "-o", "/dev/null", "http://127.0.0.1:18120/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  web:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18443:18443"
+    volumes:
+      - ./deploy/local/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./runtime/local/caddy-data:/data
+      - ./runtime/local/caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -60,7 +60,7 @@ export function OrderSummary({ plan, country, order, seats }: Props) {
           ) : (
             <Text size="sm" c="dimmed" ta="right">
               {!order
-                ? "创建结账后显示"
+                ? plan === "plus" ? "填写账单地址并创建结账后显示" : "创建结账后显示"
                 : isHostedOrder(order)
                   ? "尚未取得 Stripe 报价"
                   : "未从结账拿到金额"}

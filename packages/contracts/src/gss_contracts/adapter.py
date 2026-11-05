@@ -47,6 +47,7 @@ class CheckoutRequest:
     workspace_name: str = ""
     seat_quantity: int = 5
     price_interval: str = "month"
+    billing: Optional[Dict[str, str]] = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ class CheckoutResult:
     checkout_kind: str = "custom"
     confirm_return_url: str = ""
     effective_proxy: Optional[str] = field(default=None, repr=False)
+    quote_error: Optional[str] = None
 
 
 @runtime_checkable

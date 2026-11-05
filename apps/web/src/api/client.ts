@@ -11,6 +11,7 @@ export interface Order {
   amount?: string | null;
   currency?: string | null;
   billing?: {
+    email?: string;
     name?: string;
     line1?: string;
     city?: string;
@@ -87,6 +88,7 @@ export async function createOrder(input: {
   workspace_name?: string;
   seat_quantity?: number;
   price_interval?: "month" | "year";
+  billing?: BillingInput;
 }): Promise<Order> {
   const res = await fetch("/api/orders", {
     method: "POST",
@@ -100,6 +102,7 @@ export async function createOrder(input: {
       workspace_name: input.workspace_name || "",
       seat_quantity: input.seat_quantity,
       price_interval: input.price_interval || "month",
+      billing: input.billing,
       mode: {
         account_source: "customer_session",
         card_source: "customer",
@@ -182,6 +185,12 @@ async function fetchWithDeadline(url: string, init: RequestInit, ms: number, tim
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function refreshCheckoutQuote(orderId: string): Promise<Order> {
+  const res = await fetch(`/api/orders/${orderId}/quote`, { method: "POST", headers: jsonHeaders });
+  if (!res.ok) throw new Error(await readError(res));
+  return await res.json();
 }
 
 export async function quoteTeam(orderId: string, billing?: BillingInput): Promise<Order> {
@@ -386,6 +395,7 @@ export interface ProxyInfo {
   has_password: boolean;
   has_region_param?: boolean;
   has_sid_param?: boolean;
+  routing_format?: "123proxy" | "standard";
 }
 
 export async function getProxies(): Promise<{ checkout: ProxyInfo; approve: ProxyInfo }> {

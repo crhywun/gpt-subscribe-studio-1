@@ -418,6 +418,8 @@ class CheckoutSession:
     customer_session_client_secret: str = ""
     checkout_kind: str = "custom"
     confirm_return_url: str = ""
+    billing: Optional[Dict[str, str]] = None
+    quote_error: str = ""
 
 
 def jwt_account_id(access_token: str) -> str:
@@ -687,9 +689,15 @@ class ChatGPTClient:
         )
         value = header_value(token)
         if not value:
+            from .sentinel import last_failure
+            reason = last_failure().get("reason", "unknown")
+            labels = {"node_missing": "未找到 Node", "node_timeout": "Node 执行超时",
+                      "assets_missing": "缺少本地脚本", "bridge_error": "脚本或上游响应异常",
+                      "empty_output": "Node 未返回结果", "invalid_bridge_json": "脚本输出格式异常"}
             raise DomainError(
                 ErrorCode.CHECKOUT_UPSTREAM_ERROR,
-                "无法签发 ChatGPT 风控令牌（Sentinel）。请确认容器里有 Node，且出口代理可用。",
+                f"无法取得 ChatGPT 风控令牌（Sentinel）：{labels.get(reason, '返回内容无效')}。请查看本机 Sentinel 诊断日志。",
+                detail={"stage": "sentinel", "reason": reason},
             )
         self.sentinel_token = value
         self.sentinel_so = so_header_value(token)
@@ -841,6 +849,7 @@ class ChatGPTClient:
         workspace_name: str = "",
         seat_quantity: int = 5,
         price_interval: str = "month",
+        billing: Optional[Dict[str, str]] = None,
     ) -> CheckoutSession:
         country = country.upper()
         currency = currency_for(country)
@@ -922,22 +931,33 @@ class ChatGPTClient:
                 pk = ""
         page = url if str(url).startswith("http") else page_url
         amount, quote_currency = quote_from_payload(payload, currency)
+        quote_billing = dict(billing) if billing is not None else None
+        quote_error = ""
         if not hosted:
             refreshed, refreshed_currency = self._quote_from_context(
                 processor=processor, checkout_id=session_id, page_url=page, currency=quote_currency or currency
             )
             if refreshed is not None:
                 amount, quote_currency = refreshed, refreshed_currency
-            billing = address_for(country)
-            taxed, taxed_currency = self._quote_from_taxes(
-                checkout_id=session_id,
-                page_url=page,
-                currency=quote_currency or currency,
-                billing=billing,
-                processor=processor,
-            )
-            if taxed is not None:
-                amount, quote_currency = taxed, taxed_currency
+            quote_billing = quote_billing if quote_billing is not None else address_for(country)
+            try:
+                taxed, taxed_currency = self._quote_from_taxes(
+                    checkout_id=session_id,
+                    page_url=page,
+                    currency=quote_currency or currency,
+                    billing=quote_billing,
+                    processor=processor,
+                    strict=billing is not None,
+                )
+                if taxed is not None:
+                    amount, quote_currency = taxed, taxed_currency
+            except DomainError as exc:
+                # The upstream checkout already exists. Keep it available instead
+                # of discarding it just because its updated quote is unavailable.
+                if billing is None:
+                    raise
+                amount = None
+                quote_error = exc.message
         customer_session = str(
             payload.get("customer_session_client_secret")
             or payload.get("customerSessionClientSecret")
@@ -958,6 +978,8 @@ class ChatGPTClient:
             customer_session_client_secret=customer_session,
             checkout_kind="hosted" if hosted else "custom",
             confirm_return_url="" if hosted else confirm_return,
+            billing=quote_billing,
+            quote_error=quote_error,
         )
 
     def _publishable_key(self) -> str:
@@ -1008,6 +1030,7 @@ class ChatGPTClient:
         currency: str,
         billing: Optional[Dict[str, str]] = None,
         processor: str = "",
+        strict: bool = False,
     ) -> tuple[Optional[Decimal], str]:
         try:
             response = self.http.post(
@@ -1021,11 +1044,24 @@ class ChatGPTClient:
                 headers=self._route_headers("/backend-api/payments/checkout/taxes", page_url=page_url),
                 timeout=self.timeout,
             )
-        except Exception:
+        except Exception as exc:
+            if strict:
+                raise DomainError(ErrorCode.CHECKOUT_UPSTREAM_ERROR, "按账单地址请求报价失败，请重试创建结账") from exc
             return None, currency
         if int(getattr(response, "status_code", 0) or 0) >= 400:
+            if strict:
+                self._raise(ErrorCode.CHECKOUT_UPSTREAM_ERROR, response, "按账单地址核算税费")
             return None, currency
-        return quote_from_payload(_json(response), currency)
+        amount, found_currency = quote_from_payload(_json(response), currency)
+        if strict and amount is None:
+            # Some successful tax updates are acknowledgments without a total.
+            # Retrieve the same checkout after the update to obtain its current quote.
+            amount, found_currency = self._quote_from_context(
+                processor=processor, checkout_id=checkout_id, page_url=page_url, currency=currency,
+            )
+        if strict and amount is None:
+            raise DomainError(ErrorCode.CHECKOUT_UPSTREAM_ERROR, "结账已创建，上游报价暂未取得，请刷新报价后确认金额")
+        return amount, found_currency
 
     def prepare_setup_intent(self) -> tuple[str, str]:
         if not self.account_id:

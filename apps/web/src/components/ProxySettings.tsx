@@ -65,7 +65,7 @@ export function ProxySettings() {
       <div>
         <Title order={4}>出口代理</Title>
         <Text size="sm" c="dimmed">
-          每个使用者填自己的代理。本站会读出代理账号里的地区和 SID 参数，每个订单把地区换成所选地区、SID 换成新的随机值，同一订单内保持不变。代理的出口地区必须和 session 导出国家一致。
+          填入供应商生成的完整代理。订单地区应与实际出口一致。123Proxy 使用末尾的 +国家码，并保留供应商生成的 SESSION；其他供应商按账号中的地区和 SID 参数分配订单出口。
         </Text>
       </div>
 
@@ -92,7 +92,7 @@ export function ProxySettings() {
       <Stack gap="sm">
         <PasswordInput
           label="代理地址"
-          description="一行即可。支持 http://账号:密码@主机:端口、账号:密码@主机:端口、主机:端口:账号:密码、socks5://…。账号需含地区和 SID 参数，例如 acct-region-US-sid-abc123。"
+          description="支持 主机:端口:账号:密码、http://账号:密码@主机:端口、socks5h://…。不写协议时默认 HTTP；SOCKS5 线路必须带 socks5h:// 前缀。123Proxy 支持账号+ph 格式。"
           placeholder="http://账号-region-US-sid-abc123:密码@gateway.example.com:3010"
           value={raw}
           onChange={(event) => {
@@ -123,7 +123,15 @@ export function ProxySettings() {
               解析结果
             </Text>
             <Facts info={preview} />
-            {(!preview.has_region_param || !preview.has_sid_param) && (
+            {preview.routing_format === "123proxy" ? (
+              <Alert color={preview.has_sid_param ? "blue" : "yellow"} variant="light" icon={<IconAlertCircle size={18} />}>
+                已识别 123Proxy 格式，国家码保持小写并位于账号末尾，不追加 <Code>-region-</Code> 或 <Code>-sid-</Code>。
+                {preview.has_sid_param
+                  ? " 将保留你从供应商控制台生成的 SESSION。"
+                  : " 当前未包含粘性 SESSION，连续请求可能更换出口。多步骤流程建议在供应商控制台启用 SESSION 后重新复制完整代理。"}
+                供应商说明：国家或 SESSION 变更可能需要 3–15 分钟同步。
+              </Alert>
+            ) : (!preview.has_region_param || !preview.has_sid_param) && (
               <Alert color="yellow" variant="light" icon={<IconAlertCircle size={18} />}>
                 账号里没有检测到
                 {!preview.has_region_param && " 地区参数"}

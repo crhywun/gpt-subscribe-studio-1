@@ -1,0 +1,12 @@
+{
+    admin off
+    auto_https disable_redirects
+    skip_install_trust
+}
+
+https://localhost:18443 {
+    tls internal
+    reverse_proxy api:18120 {
+        flush_interval -1
+    }
+}

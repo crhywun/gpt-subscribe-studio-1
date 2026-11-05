@@ -14,6 +14,16 @@ class ModeIn(BaseModel):
     risk_acknowledged: bool = False
 
 
+class BillingIn(BaseModel):
+    email: str = Field(default="", max_length=254)
+    name: str = Field(min_length=1, max_length=100)
+    line1: str = Field(min_length=1, max_length=200)
+    city: str = Field(min_length=1, max_length=100)
+    state: str = Field(default="", max_length=100)
+    postal_code: str = Field(min_length=1, max_length=20)
+    country: str = Field(min_length=2, max_length=2)
+
+
 class OrderCreateRequest(BaseModel):
     plan: str
     billing_country: str
@@ -25,16 +35,7 @@ class OrderCreateRequest(BaseModel):
     workspace_name: str = ""
     seat_quantity: Optional[int] = None
     price_interval: str = "month"
-
-
-class BillingIn(BaseModel):
-    email: str = Field(default="", max_length=254)
-    name: str = Field(min_length=1, max_length=100)
-    line1: str = Field(min_length=1, max_length=200)
-    city: str = Field(min_length=1, max_length=100)
-    state: str = Field(default="", max_length=100)
-    postal_code: str = Field(min_length=1, max_length=20)
-    country: str = Field(min_length=2, max_length=2)
+    billing: Optional[BillingIn] = None
 
 
 class CardIn(BaseModel):

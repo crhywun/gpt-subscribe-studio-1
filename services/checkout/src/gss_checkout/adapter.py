@@ -141,7 +141,7 @@ class UpstreamCheckoutAdapter(CheckoutAdapterBase):
         amount = created.amount
         # Team 托管长链的实际价格（席位、周期、优惠码）只在 Stripe 页面上有，拿不到报价就留空，
         # 不能拿写死的 25 × 席位数冒充应付金额。
-        if amount is None and req.plan is not Plan.TEAM:
+        if amount is None and req.plan is not Plan.TEAM and req.billing is None:
             amount = Decimal("0.00") if req.billing_mode is BillingMode.PROMO else _list_price(req)
         return CheckoutResult(
             checkout_url=created.checkout_url,
@@ -152,10 +152,13 @@ class UpstreamCheckoutAdapter(CheckoutAdapterBase):
             checkout_session_id=created.checkout_session_id,
             publishable_key=created.publishable_key or None,
             customer_session_client_secret=created.customer_session_client_secret or None,
-            billing=dict(address_for(req.billing_country)),
+            billing=dict(getattr(created, "billing", None) or req.billing or address_for(req.billing_country)),
             checkout_kind=created.checkout_kind or ("hosted" if req.plan is Plan.TEAM else "custom"),
             confirm_return_url=created.confirm_return_url or "",
             effective_proxy=used_proxy,
+            quote_error=getattr(created, "quote_error", "") or (
+                "结账已创建，上游报价暂未取得，请刷新报价后确认金额" if amount is None and req.billing is not None else None
+            ),
         )
 
     def _create(self, req: CheckoutRequest, proxy: Optional[str]):
@@ -174,6 +177,7 @@ class UpstreamCheckoutAdapter(CheckoutAdapterBase):
                 workspace_name=req.workspace_name,
                 seat_quantity=req.seat_quantity,
                 price_interval=req.price_interval,
+                billing=req.billing,
             )
         finally:
             client.close()
@@ -202,7 +206,7 @@ class FakeCheckoutAdapter(CheckoutAdapterBase):
                 f"cs_test_fake_{len(self.calls)}" if hosted else f"oaics_fake_{len(self.calls)}"
             ),
             publishable_key="pk_test_fake" if hosted else None,
-            billing=dict(address_for(req.billing_country)),
+            billing=dict(req.billing or address_for(req.billing_country)),
             checkout_kind="hosted" if hosted else "custom",
         )
 

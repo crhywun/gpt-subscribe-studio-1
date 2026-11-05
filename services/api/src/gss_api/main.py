@@ -56,16 +56,21 @@ def create_app() -> FastAPI:
             "missing_upstreams": missing_upstreams(settings),
         }
 
-    # ── 出口代理连接失败 → 503（而不是裸 500）────────────────────
-    # 住宅动态代理偶发 TLS 中断：BoringSSL SSL_connect: Connection closed abruptly。
-    # 这类错误对用户意味着「换个出口重试」，不是服务端 bug。
+    # Distinguish local client configuration errors from upstream network errors.
     try:
-        from curl_cffi.requests.exceptions import RequestException as _CurlErr
+        from curl_cffi.requests.exceptions import (
+            ConnectionError as _CurlConnectionError,
+            ImpersonateError as _ImpersonateError,
+            ProxyError as _CurlProxyError,
+            Timeout as _CurlTimeout,
+        )
+        _CurlNetworkErrors = (_CurlConnectionError, _CurlProxyError, _CurlTimeout)
     except Exception:  # noqa: BLE001
-        _CurlErr = None  # type: ignore[assignment]
+        _CurlNetworkErrors = ()
+        _ImpersonateError = None  # type: ignore[assignment]
     try:
         import httpx as _httpx
-        _HttpxErr = _httpx.HTTPError
+        _HttpxErr = _httpx.TransportError
     except Exception:  # noqa: BLE001
         _HttpxErr = None  # type: ignore[assignment]
 
@@ -77,16 +82,22 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _conn_error_handler(request, exc):  # noqa: ANN001
+        if _ImpersonateError is not None and isinstance(exc, _ImpersonateError):
+            return JSONResponse(
+                status_code=500,
+                content={"code": "http_client_configuration_error",
+                         "detail": "本机 HTTP 依赖不支持所需浏览器版本，请更新项目依赖并重启服务。"},
+            )
         is_conn = (
-            (_CurlErr is not None and isinstance(exc, _CurlErr))
+            isinstance(exc, _CurlNetworkErrors)
             or (_HttpxErr is not None and isinstance(exc, _HttpxErr))
             or any(k in str(exc) for k in _CONN_HINTS)
         )
         if is_conn:
             return JSONResponse(
                 status_code=503,
-                content={"detail": "出口代理连接 chatgpt.com 失败（住宅代理断连），"
-                                   "请重试；连续失败请更换代理 SID 或线路。"},
+                content={"detail": "连接上游服务失败或超时。请检查代理到目标服务的连通性，"
+                                   "必要时重试或更换线路。"},
             )
         raise exc
 

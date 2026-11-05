@@ -23,6 +23,8 @@ data/
 sessions/
 credentials/
 *.session.json
+session.txt
+*.session.txt
 deploy/.env
 .env
 .env.local

@@ -7,6 +7,14 @@
 **/*.pyc
 attic/
 runtime/
+session.txt
+*.session.txt
+.env
+.env.*
+config/
+data/
+credentials/
+private/
 tests/
 specs/
 docs/

@@ -18,6 +18,34 @@ ROLES = ("checkout", "approve")
 # 供应商写法不一：-region-US / _country_us、-sid-abc / -session-abc。替换时保留原来的键名与大小写。
 _REGION = re.compile(r"([-_](?:region|country|area|cc)[-_])([A-Za-z]{2})(?=[-_]|$)", re.I)
 _SID = re.compile(r"([-_](?:sid|session|sessid|sessionid)[-_])([A-Za-z0-9]+)(?=[-_]|$)", re.I)
+_123_REGION = re.compile(r"\+([A-Za-z]{2})$")
+_123_SESSION = re.compile(r"-sess_([A-Za-z0-9]{12})_([0-9]{1,3})$")
+
+
+def _is_123proxy(host: str) -> bool:
+    return host.lower().rstrip(".") == "residential.123proxy.cn"
+
+
+def _123proxy_parts(username: str):
+    country = _123_REGION.search(username)
+    body = username[:country.start()] if country else username
+    session = _123_SESSION.search(body)
+    if "-sess_" in body and (not session or not 1 <= int(session[2]) <= 120):
+        raise ValueError("123Proxy SESSION 格式应为 -sess_12位字母数字_分钟数，分钟数为 1–120")
+    return body, country, session
+
+
+def _route_123proxy_username(username: str, region: str, sid: str) -> str:
+    """123Proxy: account[-sess_12chars_minutes][+country]; country stays last."""
+    body, country, session = _123proxy_parts(username)
+    suffix = "+" + region.lower() if region else (country[0].lower() if country else "")
+    if sid:
+        if not re.fullmatch(r"[A-Za-z0-9]{12}", sid):
+            raise ValueError("123Proxy SESSION ID 必须是 12 位字母或数字")
+        minutes = session[2] if session else "15"
+        base = body[:session.start()] if session else body
+        body = f"{base}-sess_{sid}_{minutes}"
+    return body + suffix
 
 
 def _like(old: str, new: str) -> str:
@@ -73,6 +101,12 @@ class Gateway:
             raise ValueError("地区填写两位国家码，例如 US")
         if self.sid and not re.fullmatch(r"[A-Za-z0-9]{1,64}", self.sid):
             raise ValueError("SID 只能包含字母和数字，最多 64 位")
+        if _is_123proxy(self.host):
+            self.username = _route_123proxy_username(self.username, self.region, self.sid)
+            _, region_match, sid_match = _123proxy_parts(self.username)
+            self.region = region_match[1].upper() if region_match else ""
+            self.sid = sid_match[1] if sid_match else ""
+            return self
         self.username = route_username(self.username, self.region, self.sid)
         region_match, sid_match = _REGION.search(self.username), _SID.search(self.username)
         if region_match:
@@ -100,6 +134,7 @@ class Gateway:
             "enabled": self.enabled,
             "has_username": bool(self.username),
             "has_password": bool(self.password),
+            "routing_format": "123proxy" if _is_123proxy(self.host) else "standard",
         }
 
 
@@ -191,13 +226,15 @@ def configured_proxy(role: str) -> str | None:
         return None
 
 
-def new_proxy_sid() -> str:
+def new_proxy_sid(*, length: int = 8) -> str:
     # GSS_PROXY_SID pins the sticky session (debugging / solver-IP alignment).
     pinned = os.environ.get("GSS_PROXY_SID", "").strip()
     if pinned:
+        if length == 12 and not re.fullmatch(r"[A-Za-z0-9]{12}", pinned):
+            raise ValueError("123Proxy 的 GSS_PROXY_SID 必须是 12 位字母或数字")
         return pinned
     alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(8))
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def rewrite_proxy_exit(proxy: str, *, region: str = "", sid: str = "") -> str:
@@ -213,12 +250,14 @@ def rewrite_proxy_exit(proxy: str, *, region: str = "", sid: str = "") -> str:
         return proxy
     region = str(region or "").strip().upper()
     sid = str(sid or "").strip()
-    if region:
+    if _is_123proxy(hostname):
+        username = _route_123proxy_username(username, region, sid)
+    elif region:
         if _REGION.search(username):
             username = _REGION.sub(lambda match: match[1] + _like(match[2], region), username)
         else:
             username = f"{username}-region-{region}"
-    if sid:
+    if sid and not _is_123proxy(hostname):
         if _SID.search(username):
             username = _SID.sub(lambda match: match[1] + sid, username)
         else:
@@ -235,7 +274,8 @@ def rewrite_proxy_exit(proxy: str, *, region: str = "", sid: str = "") -> str:
 
 def rotate_proxy_sid(proxy: str) -> str:
     """只换 SID，地区不变。"""
-    return rewrite_proxy_exit(proxy, sid=new_proxy_sid())
+    length = 12 if _is_123proxy(urlsplit(proxy or "").hostname or "") else 8
+    return rewrite_proxy_exit(proxy, sid=new_proxy_sid(length=length))
 
 
 def session_proxy(role: str, region: str) -> str | None:
@@ -243,12 +283,20 @@ def session_proxy(role: str, region: str) -> str | None:
     base = configured_proxy(role)
     if not base:
         return None
+    # Preserve the supplier-generated SESSION: new 123Proxy routes can take
+    # 3–15 minutes to synchronize, so do not invent a session on every order.
+    if _is_123proxy(urlsplit(base).hostname or ""):
+        return rewrite_proxy_exit(base, region=normalize_region(region))
     return rewrite_proxy_exit(base, region=normalize_region(region), sid=new_proxy_sid())
 
 
 def proxy_exit_region(proxy: str) -> str:
     """从代理用户名里读当前出口国家码。"""
-    username = unquote(urlsplit(str(proxy or "")).username or "")
+    parsed = urlsplit(str(proxy or ""))
+    username = unquote(parsed.username or "")
+    if _is_123proxy(parsed.hostname or ""):
+        _, country, _ = _123proxy_parts(username)
+        return country[1].upper() if country else ""
     match = _REGION.search(username)
     return match[2].upper() if match else ""
 
@@ -329,8 +377,8 @@ def gateway_from_input(raw: str, *, enabled: bool = True) -> Gateway:
 def describe_gateway(gateway: Gateway) -> dict:
     """给界面预览用：不含账号密码，标出是否检测到地区 / SID 参数。"""
     data = gateway.public()
-    data["has_region_param"] = bool(_REGION.search(gateway.username))
-    data["has_sid_param"] = bool(_SID.search(gateway.username))
+    data["has_region_param"] = bool(gateway.region)
+    data["has_sid_param"] = bool(gateway.sid)
     return data
 
 

@@ -12,12 +12,12 @@ import {
   type TeamCardPayload,
 } from "../api/client";
 import { PROTOCOL_STAGE_LABELS, protocolBillingError, protocolCardError, protocolIsPaid, protocolPostReady, protocolStateLabel } from "../card-payment/protocolBind";
-import { randomBillingExample } from "../card-payment/billingExamples";
 
 interface Props {
   orderId: string;
   country: string;
   sessionEmail?: string | null;
+  initialBilling?: Partial<BillingInput> | null;
   amount?: string | null;
   currency?: string | null;
   quotationError?: string | null;
@@ -25,18 +25,20 @@ interface Props {
   submissionDisabled?: boolean;
   onBusyChange?: (busy: boolean) => void;
   onDone?: (result: ProtocolPayResult) => void;
+  onRefreshQuote?: () => Promise<void> | void;
 }
 
 export function PlusProtocolPayPanel({
-  orderId, country, sessionEmail, amount, currency, quotationError, disabled = false,
-  submissionDisabled = false, onBusyChange, onDone,
+  orderId, country, sessionEmail, initialBilling, amount, currency, quotationError, disabled = false,
+  submissionDisabled = false, onBusyChange, onDone, onRefreshQuote,
 }: Props) {
   const [card, setCard] = useState<TeamCardPayload>({ number: "", cvc: "", exp_month: "", exp_year: "" });
   const [billing, setBilling] = useState<BillingInput>({
     name: "", email: sessionEmail || "", line1: "", city: "", state: "", postal_code: "", country: country || "US",
+    ...initialBilling,
   });
   const [result, setResult] = useState<BindAndPayProtocolResult | null>(null);
-  const [work, setWork] = useState<"submit" | "query" | null>(null);
+  const [work, setWork] = useState<"submit" | "query" | "quote" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsQuery, setNeedsQuery] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -60,6 +62,7 @@ export function PlusProtocolPayPanel({
   const canSubmit = !disabled && !submissionDisabled && work === null && hasQuote && !needsQuery
     && protocolPostReady(result) && (!quoteChanged || quoteConfirmed);
   const fieldsDisabled = disabled || work !== null || submitted;
+  const billingDisabled = fieldsDisabled || Boolean(initialBilling);
 
   function applyResult(out: BindAndPayProtocolResult) {
     setResult(out);
@@ -72,7 +75,7 @@ export function PlusProtocolPayPanel({
     onDoneRef.current?.(out);
   }
 
-  async function run(kind: "submit" | "query", action: (isCurrent: () => boolean) => Promise<void>) {
+  async function run(kind: "submit" | "query" | "quote", action: (isCurrent: () => boolean) => Promise<void>) {
     if (disabled || busyRef.current) return;
     busyRef.current = true;
     const current = epoch.current;
@@ -151,6 +154,11 @@ export function PlusProtocolPayPanel({
           <Badge variant="light">服务端协议</Badge>
         </Group>
         {quotationError && <Alert color="red" mt="sm">{quotationError}</Alert>}
+        {onRefreshQuote && (
+          <Button type="button" variant="light" size="xs" mt="sm" loading={work === "quote"}
+            disabled={disabled || work !== null || submitted}
+            onClick={() => void run("quote", async () => { await onRefreshQuote(); })}>刷新报价</Button>
+        )}
       </Paper>
       <Text size="sm">填写持卡人的卡片和真实账单，确认金额后提交。服务端沿用当前订单 checkout，依次核算税费、创建 confirmation_tokens、完成 ChatGPT confirm 与 PaymentIntent confirm，再通过 GET checkout 核对 complete / paid 并查询订阅。</Text>
       <Text size="xs" c="dimmed">每个订单沿用首次提交的同一份卡片和账单，修改资料请重新开始。付款确认后仍需等待订阅生效；结果待核实时仅查询状态，不重放付款请求。</Text>
@@ -166,23 +174,18 @@ export function PlusProtocolPayPanel({
       </Paper>
       <Paper withBorder p="md" radius="md">
         <Stack gap="sm">
-          <Group justify="space-between">
-            <Text fw={600}>账单地址</Text>
-            <Button type="button" size="xs" variant="light" disabled={fieldsDisabled}
-              data-testid="random-billing-address"
-              onClick={() => setBilling((current) => randomBillingExample(current))}>随机生成地址</Button>
-          </Group>
-          <Text size="xs" c="dimmed">随机生成美国地址，保留姓名和邮箱；账单国家可单独修改，不改变订单地区与币种。</Text>
+          <Text fw={600}>账单地址</Text>
+          <Text size="xs" c="dimmed">{initialBilling ? "本次报价使用创建结账时填写的地址。修改地址请重新创建结账。" : "请填写付款人的真实账单地址，税费以支付平台返回结果为准。"}</Text>
           <SimpleGrid cols={{ base: 1, xs: 2 }}>
-            <TextInput label="持卡人姓名" value={billing.name} onChange={changeBilling("name")} autoComplete="cc-name" disabled={fieldsDisabled} />
-            <TextInput label="账单邮箱" type="email" value={billing.email || ""} onChange={changeBilling("email")} autoComplete="email" disabled={fieldsDisabled} />
+            <TextInput label="持卡人姓名" value={billing.name} onChange={changeBilling("name")} autoComplete="cc-name" disabled={billingDisabled} />
+            <TextInput label="账单邮箱" type="email" value={billing.email || ""} onChange={changeBilling("email")} autoComplete="email" disabled={billingDisabled} />
           </SimpleGrid>
-          <TextInput label="街道地址" value={billing.line1} onChange={changeBilling("line1")} autoComplete="address-line1" disabled={fieldsDisabled} />
+          <TextInput label="街道地址" value={billing.line1} onChange={changeBilling("line1")} autoComplete="address-line1" disabled={billingDisabled} />
           <SimpleGrid cols={{ base: 1, xs: 2 }}>
-            <TextInput label="城市" value={billing.city} onChange={changeBilling("city")} autoComplete="address-level2" disabled={fieldsDisabled} />
-            <TextInput label="州 / 省" value={billing.state} onChange={changeBilling("state")} autoComplete="address-level1" disabled={fieldsDisabled} />
-            <TextInput label="邮编" value={billing.postal_code} onChange={changeBilling("postal_code")} autoComplete="postal-code" disabled={fieldsDisabled} />
-            <TextInput label="账单国家（两位代码）" value={billing.country} onChange={changeBilling("country")} maxLength={2} autoComplete="country" disabled={fieldsDisabled} />
+            <TextInput label="城市" value={billing.city} onChange={changeBilling("city")} autoComplete="address-level2" disabled={billingDisabled} />
+            <TextInput label="州 / 省" value={billing.state} onChange={changeBilling("state")} autoComplete="address-level1" disabled={billingDisabled} />
+            <TextInput label="邮编" value={billing.postal_code} onChange={changeBilling("postal_code")} autoComplete="postal-code" disabled={billingDisabled} />
+            <TextInput label="账单国家（两位代码）" value={billing.country} onChange={changeBilling("country")} maxLength={2} autoComplete="country" disabled={billingDisabled} />
           </SimpleGrid>
         </Stack>
       </Paper>
@@ -214,7 +217,7 @@ export function PlusProtocolPayPanel({
         <Button type="button" variant="default" loading={work === "query"} disabled={disabled || work !== null} onClick={queryProtocol}>查询协议状态</Button>
         <Button type="button" loading={work === "submit"} disabled={!canSubmit} onClick={submitProtocol}>协议支付{price ? ` ${price}` : ""}</Button>
       </Group>
-      {work && <Text size="sm" role="status">{work === "query" ? "正在读取协议状态…" : "服务端正在处理本次请求…"}</Text>}
+      {work && <Text size="sm" role="status">{work === "query" ? "正在读取协议状态…" : work === "quote" ? "正在读取原结账的报价…" : "服务端正在处理本次请求…"}</Text>}
       {error && <Alert color="red" role="alert">{error}</Alert>}
     </Stack>
   );

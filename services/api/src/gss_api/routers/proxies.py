@@ -83,9 +83,11 @@ async def save_proxy(role: str, request: Request):
 async def probe_gateway(proxy_url: str) -> dict:
     start = time.perf_counter()
     async with httpx.AsyncClient(
-        proxy=proxy_url, timeout=12.0, follow_redirects=False, trust_env=False
+        proxy=proxy_url, timeout=httpx.Timeout(20.0, connect=10.0), follow_redirects=False, trust_env=False
     ) as client:
-        response = await client.get("https://api64.ipify.org?format=json")
+        # Use the supplier's documented IPv4 check; api64 may route to IPv6
+        # that is unavailable through an otherwise working residential exit.
+        response = await client.get("https://api.ipify.org?format=json")
         response.raise_for_status()
         ip = str(ipaddress.ip_address(response.json()["ip"]))
     return {"ip": ip, "elapsed_ms": round((time.perf_counter() - start) * 1000)}
@@ -104,5 +106,7 @@ async def test_proxy(role: str, request: Request):
         return {"role": role, "region": gateway.region, "sid": gateway.sid, **result}
     except HTTPException:
         raise
+    except httpx.TimeoutException:
+        raise HTTPException(502, "代理连接超时。未写协议时默认 HTTP；SOCKS5 线路请使用 socks5h://账号:密码@主机:端口，并核对供应商端口。")
     except (httpx.HTTPError, ValueError, KeyError, TypeError, OSError):
         raise HTTPException(502, "代理连接失败，请检查网关、账号密码和供应商白名单后重试")

@@ -5,6 +5,7 @@ import asyncio
 import copy
 import json
 import socket
+import sys
 import threading
 from decimal import Decimal
 from types import SimpleNamespace
@@ -46,8 +47,15 @@ def flow(monkeypatch):
     def block(*args, **kwargs):
         state["violations"].append("real network attempt")
         raise AssertionError("offline test attempted network")
+    socket_connect = socket.socket.connect
+    def guard_connect(connection, address):
+        # Windows asyncio implements its internal wakeup socketpair over loopback TCP.
+        # HTTP/curl transports remain blocked below, as do all external socket connects.
+        if sys.platform == "win32" and isinstance(address, tuple) and address[0] in {"127.0.0.1", "::1"}:
+            return socket_connect(connection, address)
+        return block(connection, address)
     monkeypatch.setattr(socket, "create_connection", block)
-    monkeypatch.setattr(socket.socket, "connect", block)
+    monkeypatch.setattr(socket.socket, "connect", guard_connect)
     from curl_cffi import requests
     monkeypatch.setattr(requests.Session, "request", block)
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", block)

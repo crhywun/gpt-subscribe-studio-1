@@ -71,6 +71,7 @@ class OrderPipeline:
         workspace_name: str = "",
         seat_quantity: int = 5,
         price_interval: str = "month",
+        billing: Optional[Dict[str, str]] = None,
     ) -> CheckoutResult:
         """阶段一：生成托管结账链接。``mode`` 非法时拒绝（含 promo 未确认）。"""
 
@@ -87,6 +88,7 @@ class OrderPipeline:
             workspace_name=workspace_name,
             seat_quantity=seat_quantity,
             price_interval=price_interval,
+            billing=dict(billing) if billing is not None else None,
         )
         return await self.deps.checkout.create_checkout(req)
 

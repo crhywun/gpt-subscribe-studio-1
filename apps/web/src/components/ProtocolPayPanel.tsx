@@ -43,6 +43,7 @@ interface Props {
   checkoutUrl?: string | null;
   /** 从 accessToken 解析出的账户邮箱，用于预填账单邮箱 */
   sessionEmail?: string | null;
+  initialBilling?: Partial<BillingInput> | null;
   /** 订单是否带优惠活动：带的话浏览器 pm_ 要声明 allow_redisplay */
   requireSaveChoice?: boolean;
   /** 取 pm_ 的方式；由上层持有，提链前就能选 */
@@ -128,7 +129,7 @@ const STEPS = [
 ];
 
 function LegacyProtocolPayPanel({
-  orderId, country, amount, currency, quotationError, exitLabel, sessionEmail,
+  orderId, country, amount, currency, quotationError, exitLabel, sessionEmail, initialBilling,
   publishableKey, pmMode, onPmMode, requireSaveChoice = false,
   checkoutUrl, disabled, submissionDisabled, browserPayment = false, onBusyChange, onDone, onRefreshQuote,
 }: Props) {
@@ -142,7 +143,7 @@ function LegacyProtocolPayPanel({
       line1: "", city: "", state: "", postal_code: "",
       country: country || "US",
     };
-    return browserPayment ? base : randomBillingExample(base);
+    return initialBilling ? { ...base, ...initialBilling } : browserPayment ? base : randomBillingExample(base);
   });
   // 取 pm_ 的方式由上层持有（提链前就能选），这里只保留输入框句柄
   const [stripeCard, setStripeCard] = useState<StripeCardHandle | null>(null);

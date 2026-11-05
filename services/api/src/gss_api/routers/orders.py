@@ -34,7 +34,7 @@ from gss_core.plus_har_protocol import PlusHarProtocol
 from gss_core.stripe_protocol import StripeProtocol, PaymentOutcome
 from gss_core.proxies import align_proxy_region, configured_proxy, session_proxy
 from gss_core.redaction import redact_sensitive
-from gss_core.chatgpt import ChatGPTClient, clamp_team_seats
+from gss_core.chatgpt import ChatGPTClient, clamp_team_seats, _processor_from_checkout_url
 from gss_core.session_token import (
     email_from_access_token,
     parse_session,
@@ -248,6 +248,17 @@ async def create_order(
     country = normalize_country(payload.billing_country)
     if not is_supported(country):
         raise _error(status.HTTP_400_BAD_REQUEST, ErrorCode.COMPLIANCE_BLOCKED, f"不支持的地区: {payload.billing_country}")
+
+    billing = None
+    if payload.billing is not None:
+        billing = {key: value.strip() for key, value in payload.billing.model_dump().items()}
+        billing["country"] = normalize_country(billing["country"])
+        if not is_supported(billing["country"]):
+            raise _error(400, ErrorCode.CHECKOUT_UPSTREAM_ERROR, "不支持的账单国家")
+        if not all(billing[key] for key in ("name", "line1", "city", "postal_code")):
+            raise _error(400, ErrorCode.CHECKOUT_UPSTREAM_ERROR, "请填写完整的真实账单地址")
+        if billing["country"] in {"US", "CA"} and not billing["state"]:
+            raise _error(400, ErrorCode.CHECKOUT_UPSTREAM_ERROR, "请填写账单地址的州或省")
     
     # 换 token 与后续提链、支付共用同一个出口（同一 sid），所以只算一次。
     exit_proxy = align_proxy_region(
@@ -333,6 +344,7 @@ async def create_order(
             workspace_name=workspace,
             seat_quantity=seats,
             price_interval=interval,
+            billing=billing,
         )
     except DomainError as exc:
         store.update_status(order.id, OrderStatus.REJECTED)
@@ -360,6 +372,7 @@ async def create_order(
     view.billing = dict(checkout.billing or {})
     view.amount = str(checkout.amount) if checkout.amount is not None else None
     view.currency = checkout.currency
+    view.quote_error = getattr(checkout, "quote_error", None) or None
     view.checkout_kind = checkout.checkout_kind or ("hosted" if plan is Plan.TEAM else "custom")
     view.confirm_return_url = checkout.confirm_return_url or None
     view.promo_code = promo_code or None
@@ -394,6 +407,50 @@ async def create_order(
     if payload.payment_method_token:
         return await pay_order(order.id, OrderPayRequest(payment_method_token=payload.payment_method_token))
     return _to_out(store.get_order(order.id))  # type: ignore[arg-type]
+
+
+@router.post("/orders/{order_id}/quote", response_model=OrderOut)
+async def refresh_checkout_quote(order_id: str) -> OrderOut:
+    order = store.get_order(order_id)
+    if order is None or order.plan is not Plan.PLUS:
+        raise HTTPException(404, "Plus 订单不存在")
+    async with _team_locks.setdefault(order_id, asyncio.Lock()):
+        if order.status is not OrderStatus.AWAITING_PAYMENT:
+            raise HTTPException(409, "订单已进入付款流程，请查询原订单状态")
+        secrets = vault.get(order_id)
+        if secrets is None:
+            raise HTTPException(401, "订单凭证已过期，请重新创建结账")
+        if secrets.saved_card_context:
+            raise HTTPException(409, "订单已开始支付处理，请使用协议状态查询")
+        view = store.view(order_id)
+        if use_fake_adapters():
+            return _to_out(order)
+        client = ChatGPTClient.from_raw_session(secrets.session, proxy=secrets.proxy or None)
+        client.timeout = 30.0
+        try:
+            amount, currency = await asyncio.to_thread(
+                client._quote_from_taxes,
+                checkout_id=secrets.checkout_session_id,
+                page_url=view.checkout_url or "",
+                currency=view.currency or "",
+                billing=secrets.billing,
+                processor=_processor_from_checkout_url(view.checkout_url or ""),
+                strict=True,
+            )
+            if amount is None or not currency:
+                raise DomainError(ErrorCode.CHECKOUT_UPSTREAM_ERROR, "报价暂未取得，请稍后刷新报价")
+            view.amount, view.currency = str(amount), currency
+            order.amount = amount
+            view.quote_error = None
+        except DomainError as exc:
+            view.amount, order.amount = None, None
+            view.quote_error = exc.message
+        except Exception:
+            view.amount, order.amount = None, None
+            view.quote_error = "读取报价时连接中断，请重试刷新报价"
+        finally:
+            client.close()
+        return _to_out(order)
 
 
 async def _mark_delivered(order_id: str) -> None:

@@ -1,4 +1,4 @@
-import { Alert, Button, Group, Paper, SegmentedControl, Select, Stack, Stepper, Text } from "@mantine/core";
+import { Alert, Button, Group, Paper, SegmentedControl, Select, Stack, Stepper, Text, TextInput } from "@mantine/core";
 import { IconAlertCircle, IconCheck } from "@tabler/icons-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -10,6 +10,7 @@ import {
   payOrder,
   prepareTeam,
   quoteTeam,
+  refreshCheckoutQuote,
   pollTeam,
   verifyOrder,
   type BillingInput,
@@ -27,6 +28,8 @@ import { SessionField } from "../components/SessionField";
 import { ProtocolPayPanel } from "../components/ProtocolPayPanel";
 import { CheckoutLinkCard } from "../components/CheckoutLinkCard";
 import { emptyTeamCard, type TeamCardDraft } from "../card-payment/TeamCardForm";
+import { BillingForm } from "../components/BillingForm";
+import { protocolBillingError } from "../card-payment/protocolBind";
 
 interface Props {
   onRecord: (order: Order) => void;
@@ -36,6 +39,9 @@ export function OrderNew({ onRecord }: Props) {
   const [plan, setPlan] = useState<Plan>("plus");
   const [country, setCountry] = useState("");
   const [session, setSession] = useState("");
+  const [checkoutBilling, setCheckoutBilling] = useState<BillingInput>({
+    name: "", email: "", line1: "", city: "", state: "", postal_code: "", country: "",
+  });
   const [team, setTeam] = useState<TeamValues>({
     seats: 5,
     workspace: "Team Workspace",
@@ -85,6 +91,7 @@ export function OrderNew({ onRecord }: Props) {
     setTeamBilling({ name: "", line1: "", city: "", state: "", postal_code: "", country: "US" });
     setAddr(null);
     setSession("");
+    setCheckoutBilling({ name: "", email: "", line1: "", city: "", state: "", postal_code: "", country: "" });
     setError(null);
     setPromo(null);
     setPromoCampaignId("");
@@ -227,6 +234,16 @@ export function OrderNew({ onRecord }: Props) {
           setError("Team 需要填写席位，最少 2 人。");
           return;
         }
+        const manualBilling = Object.fromEntries(Object.entries(checkoutBilling).map(([key, value]) =>
+          [key, (value || "").trim()])) as unknown as BillingInput;
+        manualBilling.country = manualBilling.country.toUpperCase();
+        if (plan === "plus") {
+          const invalid = protocolBillingError(manualBilling);
+          if (invalid || !manualBilling.postal_code) {
+            setError(invalid || "请填写账单地址邮编。");
+            return;
+          }
+        }
         const created = await createOrder({
           plan,
           billing_country: country,
@@ -236,6 +253,7 @@ export function OrderNew({ onRecord }: Props) {
           workspace_name: plan === "team" ? team.workspace.trim() : "",
           seat_quantity: plan === "team" ? team.seats : undefined,
           price_interval: plan === "team" ? team.interval : undefined,
+          billing: plan === "plus" ? manualBilling : undefined,
         });
         if (created.plan !== "plus" && !created.publishable_key && !isHostedOrder(created)) {
           throw new Error("结账已创建，但没有拿到 Stripe 公钥，无法加载安全输入框。");
@@ -387,11 +405,25 @@ export function OrderNew({ onRecord }: Props) {
                   }
                 }}
                 country={country}
-                onCountry={setCountry}
+                onCountry={(next) => {
+                  setCountry(next);
+                  setCheckoutBilling((previous) => previous.country ? previous : { ...previous, country: next });
+                }}
                 team={team}
                 onTeam={setTeam}
                 disabled={busy}
               />
+              {plan === "plus" && (
+                <Paper withBorder p="md" radius="md" data-testid="checkout-billing-form">
+                  <Stack gap="sm">
+                    <Text fw={600}>账单地址（创建结账前填写）</Text>
+                    <Text size="sm" c="dimmed">填写付款人的真实账单地址。创建结账时会提交这份地址核算税费，取得报价后再填写卡片和确认付款。</Text>
+                    <TextInput label="账单邮箱" type="email" value={checkoutBilling.email || ""} autoComplete="email" disabled={busy}
+                      onChange={(event) => setCheckoutBilling({ ...checkoutBilling, email: event.currentTarget.value })} />
+                    <BillingForm independentCountry compact value={checkoutBilling} onChange={setCheckoutBilling} disabled={busy} />
+                  </Stack>
+                </Paper>
+              )}
               <div>
                 <Text size="sm" fw={600} mb={6}>支付方式</Text>
                 <SegmentedControl
@@ -518,6 +550,7 @@ export function OrderNew({ onRecord }: Props) {
                 browserPayment={order.plan === "plus" && pmMode === "stripe"}
                 submissionDisabled={order.status !== "awaiting_payment"}
                 sessionEmail={order.session_email}
+                initialBilling={order.billing}
                 pmMode={pmMode}
                 onPmMode={setPmMode}
                 requireSaveChoice={Boolean(order.promo_campaign_id)}
@@ -530,11 +563,15 @@ export function OrderNew({ onRecord }: Props) {
                 checkoutUrl={order.checkout_url}
                 disabled={busy || (order.plan !== "plus" && order.status !== "awaiting_payment")}
                 onBusyChange={setProtocolBusy}
-                onRefreshQuote={order.plan === "plus" ? undefined : async () => {
+                onRefreshQuote={async () => {
                   if (!order) return;
                   setBusy(true);
                   setError(null);
                   try {
+                    if (order.plan === "plus") {
+                      setOrder(await refreshCheckoutQuote(order.id));
+                      return;
+                    }
                     // 报价带账单地址才能算准税额；订单上已有就用它
                     const known = order.billing;
                     const complete = Boolean(
@@ -577,7 +614,7 @@ export function OrderNew({ onRecord }: Props) {
           )}
           {order && step < 2 && (
             <Stack gap="xs" mt="xs">
-              <Text size="xs" c="dimmed">想改套餐或地区？点击「重新开始」。</Text>
+              <Text size="xs" c="dimmed">想改套餐、地区或账单地址？点击「重新开始」。</Text>
               <Button type="button" variant="subtle" disabled={busy || protocolBusy} onClick={reset}>重新开始</Button>
             </Stack>
           )}

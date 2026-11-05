@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   bindAndPayProtocol,
+  createOrder,
   getBindAndPayProtocol,
   type BindAndPayProtocolInput,
   type BindAndPayProtocolResult,
@@ -46,8 +47,8 @@ test("Plus bindBeforePay renders server card inputs and never renders Stripe or 
   for (const marker of ["协议绑卡并支付", "绑卡验证", "先绑卡", "重新提链", "再次提链", "完成绑卡", "保存卡片成功"]) {
     assert.ok(!html.includes(marker), marker);
   }
-  assert.ok(html.includes("随机生成地址"));
-  assert.ok(html.includes('data-testid="random-billing-address"'));
+  assert.ok(!html.includes("随机生成地址"));
+  assert.ok(!html.includes('data-testid="random-billing-address"'));
   for (const marker of ["plus-saved-card-panel", "stripe-setup-element", "stripe-payment-element", "Stripe 输入框", "指定代理", "指纹注册", "solver"]) {
     assert.ok(!html.includes(marker), marker);
   }
@@ -72,7 +73,8 @@ test("new Plus order configuration retains both protocol and Stripe input modes"
   const html = renderToStaticMarkup(<MantineProvider><OrderNew onRecord={() => {}} /></MantineProvider>);
   assert.ok(html.includes("协议提交（服务端提交卡号）"));
   assert.ok(html.includes("Stripe 输入框（浏览器换 pm_）"));
-  assert.ok(html.includes("Plus 协议模式沿用当前订单结账，按账单地址核算税费后确认付款"));
+  assert.ok(html.includes("账单地址（创建结账前填写）"));
+  assert.ok(html.includes('data-testid="checkout-billing-form"'));
   assert.ok(html.includes("confirmation_tokens"));
   assert.ok(html.includes("ChatGPT confirm"));
   assert.ok(html.includes("PaymentIntent confirm"));
@@ -81,6 +83,41 @@ test("new Plus order configuration retains both protocol and Stripe input modes"
     assert.ok(!html.includes(marker), marker);
   }
   assert.ok(!html.includes("plus-saved-card-panel"));
+});
+
+test("Plus payment retains the billing address used to obtain the quote", () => {
+  const html = renderToStaticMarkup(<MantineProvider><ProtocolPayPanel orderId="manual-fixture"
+    bindBeforePay country="PH" initialBilling={input.billing} amount="1234.56" currency="PHP" pmMode="server" /></MantineProvider>);
+  assert.ok(html.includes('value="Fixture Holder"'));
+  assert.ok(html.includes('value="1 Fixture Street"'));
+  assert.ok(html.includes("本次报价使用创建结账时填写的地址"));
+  assert.ok(!html.includes('data-testid="random-billing-address"'));
+});
+
+test("created checkout with unavailable quote remains visible and cannot submit payment", () => {
+  const html = renderToStaticMarkup(<MantineProvider><ProtocolPayPanel orderId="quote-pending-fixture"
+    bindBeforePay country="PH" initialBilling={input.billing} amount={null} currency="PHP" pmMode="server"
+    quotationError="报价暂未取得" onRefreshQuote={async () => {}} /></MantineProvider>);
+  assert.ok(html.includes('data-testid="plus-protocol-pay-panel"'));
+  assert.ok(html.includes("报价暂未取得") && html.includes("刷新报价"));
+  const paymentButton = (html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) || []).find((button) => button.includes("协议支付"));
+  assert.match(paymentButton || "", /\bdisabled\b/);
+});
+
+test("creating checkout submits manual billing without submitting a card or payment", async () => {
+  const originalFetch = globalThis.fetch;
+  let body: Record<string, unknown> = {};
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), "/api/orders");
+    body = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify(order), { status: 201 });
+  };
+  try {
+    await createOrder({plan: "plus", billing_country: "PH", session: "fixture-session", billing: input.billing});
+    assert.deepEqual(body.billing, input.billing);
+    assert.equal(body.billing_country, "PH");
+    assert.ok(!("card" in body) && !("expected_amount" in body));
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("Plus result pages retain actual action state without offering a browser checkout link", () => {
